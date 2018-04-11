@@ -13,7 +13,27 @@ from datetime import datetime
 import config
 
 class CauSync(object):
-    """ CauSync object for Sync-related functions. """
+    """ CauSync object for sync-related functions.
+
+        Args:
+            cs_config (module): config module is passed to CauSync here
+            src (str): backup source directory, this is backed up to the destination
+            dst (str): backup destination directory, this is where source is backed up to
+            checkonly (bool): if True, CauSync only check if it is running on the specified directories (source, dest)
+            cleanup (bool): if True, CauSync deletes old backups - see run_cleanup()
+            incremental (bool): if True, CauSync does incremental backups
+            incremental_basedir (string): the basedir for incrementals
+            quiet (bool): if set to True, CauSync doesn't print anything to console
+            selfname (string): the program's name, should be copied from sys.argv[0], used by is_running()
+
+        Attributes:
+            pid (int): PID of the running process, uses is_running() to guess the number.
+                It will fail to get the correct number if another process is already running
+                for the same directory, but in that case the sync shouldn't be started anyway.
+            src_abs (string): absolute path of source directory
+            dst_abs (string): absolute path of destination directory
+            logger (object): the logger object used for logging to file/console
+    """
     def __init__(self,
                  cs_config,
                  src,
@@ -27,14 +47,11 @@ class CauSync(object):
 
         self.config = cs_config
         self.name = selfname
+
         self.pid = None
 
         self.src = src
         self.src_abs = os.path.abspath(self.src)
-        self.src_basedir = self.src_abs.rstrip('/').split('/')[-1]
-        self.src_parent_dir = self.src_abs.rstrip('/').rsplit('/', 1)[0]
-        self.src_abs = os.path.abspath(src)
-        self.src_lockfile_path = "{}/{}.lock".format(self.src_parent_dir, self.src_basedir)
 
         self.dst = dst
         self.dst_abs = os.path.abspath(dst)
@@ -42,25 +59,31 @@ class CauSync(object):
         self.cleanup = cleanup
         self.checkonly = checkonly
         self.incremental = incremental
-        self.incremental_basedir = os.path.abspath(incremental_basedir) if incremental else None
+        self.incremental_basedir = os.path.abspath(incremental_basedir) if incremental_basedir else None
         self.quiet = quiet
 
         self.logger = self.get_logger()
 
     def run(self):
         """ Main run function. """
+
+        is_running = self.is_running()
+        lockfile_exists = self.lockfile_exists()
+
         self.logger.info("started with PID {}".format(self.pid))
 
         if self.cleanup:
-            self.run_cleanup(self.incremental)
+            self.run_cleanup()
+            exit(0)
         else:
-            if self.lockfile_exists() or self.is_running():
+            if lockfile_exists or is_running:
                 self.logger.info("causync is already running on {}".format(self.src_abs))
+                exit(1)
             else:
                 self.logger.info("causync is not already running on {}".format(self.src_abs))
 
-            if not self.checkonly:
-                self.run_sync()
+        if not self.checkonly:
+            self.run_sync()
 
     def run_sync(self):
         """ This function is executed when the task argument is 'sync'. """
@@ -68,18 +91,21 @@ class CauSync(object):
         curdate = datetime.now().strftime(config.DATE_FORMAT)
         extra_flags = ""
 
-        if not self.incremental:
-            dst = os.path.abspath("{dst}/{src}_{d}".format(dst=self.dst,
-                                                           src=self.src_basedir,
-                                                           d=curdate))
-        else:
-            inc_basedir_dirname = self.incremental_basedir.rstrip('/').rsplit('/', 1)[1]
-            dst = os.path.abspath("{dst}/{bd}_inc_{d}".format(dst=self.dst,
+        if self.incremental:
+            if not self.incremental_basedir:
+                self.incremental_basedir = self.find_incremental_basedir()
+            inc_basedir_dirname = self.get_basename(self.incremental_basedir)
+
+            dst = os.path.abspath("{dst}/{bd}_inc_{d}".format(dst=self.dst_abs,
                                                               bd=inc_basedir_dirname,
                                                               d=curdate))
 
-        if self.incremental and self.incremental_basedir:
             extra_flags = "--link-dest={}".format(self.incremental_basedir)
+
+        else:
+            dst = os.path.abspath("{dst}/{src}_{d}".format(dst=self.dst_abs,
+                                                           src=self.get_basename(self.src_abs),
+                                                           d=curdate))
 
         cmd = "rsync {f} {ef} {src} {dst}".format(f=self.config.RSYNC_FLAGS,
                                                   ef=extra_flags,
@@ -97,16 +123,86 @@ class CauSync(object):
 
         return result
 
-    def run_cleanup(self, incremental=False):
-        """ This function is executed when the task argument is 'cleanup'. """
+    def get_parent_dir(self, path):
+        """ Returns the parent directory of the path argument.
+            Example: path '/tmp/causync/test' results in '/tmp/causync'.
+        """
 
-        dirnames = os.listdir(self.dst)
+        if path == '/': return '/'
+        path = path.rstrip('/')
+        if path == '': raise ValueError(path)
+        path = os.path.normpath(path)
+        path = os.path.dirname(path)
+        if '//' in path: raise ValueError(path)
 
+        return path
+
+    def get_basename(self, path):
+        """ Returns the baseneme of the path argument.
+            Example: path '/tmp/causync/test' results in 'test'.
+        """
+
+        if path == '/': raise ValueError(path)
+        path = path.rstrip('/')
+        if path == '': raise ValueError(path)
+        basename = os.path.basename(path)
+        if '//' in basename: raise ValueError(basename)
+
+        return basename
+
+    def get_lockfile_path(self):
+        """ Returns the lockfile path, depends on the source directory. """
+
+        src_parent_dir = self.get_parent_dir(self.src_abs)
+        src_basedir = self.get_basename(self.src_abs)
+        return "{}/{}.lock".format(src_parent_dir, src_basedir)
+
+    def get_dirdate(self, dirname):
+        """ Returns the date extracted from a backup directory name.
+            Example: 'causync_180410_111237' results in a datetime object for '18-04-10 11:12:37'
+        """
+
+        try:
+            dirdate = "_".join(dirname.rsplit('_', 2)[1:])
+            dirdate = datetime.strptime(dirdate, config.DATE_FORMAT)
+            return dirdate
+        except ValueError as e:
+            self.logger.error(e)
+            exit(1)
+
+    def find_incremental_basedir(self):
+        """ Returns the latest basedir of the last backup. """
+
+        dirnames = os.listdir(self.dst_abs)
+        dirdates = []
+        self.logger.debug(dirnames)
+        basename = self.get_basename(self.src_abs)
+
+        for dirname in dirnames:
+            if basename not in dirname:
+                continue
+            elif self.incremental and "_inc_" in dirname:
+                continue
+            else:
+                dirdates.append(self.get_dirdate(dirname))
+
+        dirdates.sort()
+        self.logger.debug(dirdates)
+        basedir = "{}_{}".format(self.get_basename(self.src_abs), dirdates[-1].strftime(config.DATE_FORMAT))
+        self.logger.debug("basedir = " + basedir)
+
+        return os.path.join(self.dst_abs, basedir)
+
+    def run_cleanup(self):
+        """ Deletes old backups. You can set (in the config) the count of backups to keep.
+            This function is executed when the task argument is 'cleanup'.
+        """
+
+        dirnames = os.listdir(self.dst_abs)
+        dirdates = []
         self.logger.debug(dirnames)
 
-        dirdates = []
-
-        if incremental:
+        if self.incremental:
             basename = self.incremental_basedir.rsplit('/', 1)[1]
         else:
             basename = self.src_abs.split('_', 1)[0]
@@ -116,23 +212,12 @@ class CauSync(object):
         for dirname in dirnames:
             if basename not in dirname:
                 continue
-            elif incremental and "_inc_" not in dirname:
+            elif self.incremental and "_inc_" not in dirname:
                 continue
-            elif incremental and basename in dirname and "_inc_" in dirname:
-                try:
-                    dirdate = "_".join(dirname.rsplit('_', 2)[1:])
-                    dirdate = datetime.strptime(dirdate, config.DATE_FORMAT)
-                    dirdates.append(dirdate)
-                except ValueError as e:
-                    self.logger.debug(e)
+            #elif incremental and basename in dirname and "_inc_" in dirname:
+            #    dirdates.append(self.get_dirdate(dirname))
             else:
-                try:
-                    dirdate = "_".join(dirname.rsplit('_', 2)[1:])
-                    dirdate = datetime.strptime(dirdate, config.DATE_FORMAT)
-                    dirdates.append(dirdate)
-
-                except ValueError as e:
-                    self.logger.debug(e)
+                dirdates.append(self.get_dirdate(dirname))
 
         dirdates.sort()
 
@@ -141,13 +226,13 @@ class CauSync(object):
         self.logger.debug("keep={}".format(keep))
         self.logger.debug("delete={}".format(delete))
 
-        if incremental:
+        if self.incremental:
             rmstring = "{dst}/{bn}_inc_{d}"
         else:
             rmstring = "{dst}/{bn}_{d}"
 
         for dirname in delete:
-            rmtree(rmstring.format(dst=self.dst.rstrip('/'),
+            rmtree(rmstring.format(dst=self.dst_abs.rstrip('/'),
                                    bn=basename,
                                    d=dirname.strftime(config.DATE_FORMAT)))
 
@@ -156,10 +241,11 @@ class CauSync(object):
     def create_lockfile(self):
         """ Creates a lockfile at sync source directory. """
 
-        self.logger.debug("creating lockfile {}".format(self.src_lockfile_path))
+        lockfile = self.get_lockfile_path()
+        self.logger.debug("creating lockfile {}".format(lockfile))
 
         try:
-            open(self.src_lockfile_path, 'a').close()
+            open(lockfile, 'a').close()
             return True
 
         except IOError as e:
@@ -168,10 +254,11 @@ class CauSync(object):
     def remove_lockfile(self):
         """ Creates an existing lockfile at sync source directory. """
 
-        self.logger.debug("removing lockfile {}".format(self.src_lockfile_path))
+        lockfile = self.get_lockfile_path()
+        self.logger.debug("removing lockfile {}".format(lockfile))
 
         try:
-            os.remove(self.src_lockfile_path)
+            os.remove(lockfile)
             return True
 
         except IOError as e:
@@ -179,7 +266,9 @@ class CauSync(object):
 
     def lockfile_exists(self):
         """ Checks if lockfile exists at sync source directory. """
-        if os.path.isfile(self.src_lockfile_path):
+
+        lockfile = self.get_lockfile_path()
+        if os.path.isfile(lockfile):
             return True
         return False
 
@@ -210,12 +299,11 @@ class CauSync(object):
             self.logger.debug(("command '{}' returned with error "
                                "(code {}): {}").format(e.cmd, e.returncode, e.output))
 
-
-
     def get_logger(self):
         """ Returns a logger object with the current settings in config.py.
             If the -q (quiet) flag is set, it doesn't log to console.
         """
+
         logger = logging.getLogger()
         logger.setLevel(self.config.LOGLEVEL)
         formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -269,10 +357,6 @@ def parse_args():
     arguments.selfname = sys.argv[0]
     arguments.checkonly = True if arguments.task == 'check' else False
     arguments.cleanup = True if arguments.task == 'cleanup' else False
-
-    if arguments.incremental and not arguments.incremental_basedir:
-        parser.print_usage()
-        exit("{}: error: --incremental needs --incremental-basedir argument".format(arguments.selfname))
 
     return arguments
 
