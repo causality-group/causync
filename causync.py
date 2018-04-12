@@ -16,50 +16,49 @@ class CauSync(object):
     """ CauSync object for sync-related functions.
 
         Args:
-            cs_config (module): config module is passed to CauSync here
+            config (module): config module is passed to CauSync here
             src (str): backup source directory, this is backed up to the destination
             dst (str): backup destination directory, this is where source is backed up to
             checkonly (bool): if True, CauSync only check if it is running on the specified directories (source, dest)
             cleanup (bool): if True, CauSync deletes old backups - see run_cleanup()
-            incremental (bool): if True, CauSync does incremental backups
-            incremental_basedir (string): the basedir for incrementals
+            no_incremental (bool): if True, CauSync doesn't do incremental backups
+            date_ival (string): select date interval for backups (daily, monthly, etc)
             quiet (bool): if set to True, CauSync doesn't print anything to console
             selfname (string): the program's name, should be copied from sys.argv[0], used by is_running()
 
         Attributes:
-            pid (int): PID of the running process, uses is_running() to guess the number.
-                It will fail to get the correct number if another process is already running
-                for the same directory, but in that case the sync shouldn't be started anyway.
+            pid (int): PID of the current process
             src_abs (string): absolute path of source directory
-            dst_abs (string): absolute path of destination directory
+            dst_abs (string): absolute path of destination directory, joined with date_ival
             logger (object): the logger object used for logging to file/console
     """
     def __init__(self,
-                 cs_config,
+                 config,
                  src,
                  dst,
                  checkonly=False,
                  cleanup=False,
-                 incremental=False,
-                 incremental_basedir=None,
+                 no_incremental=False,
+                 date_ival='daily',
                  quiet=False,
                  selfname="causync.py"):
 
-        self.config = cs_config
+        self.config = config
         self.name = selfname
 
-        self.pid = None
+        self.pid = os.getpid()
+
+        self.no_incremental = no_incremental
+        self.date_ival = date_ival
 
         self.src = src
         self.src_abs = os.path.abspath(self.src)
 
         self.dst = dst
-        self.dst_abs = os.path.abspath(dst)
+        self.dst_abs = os.path.join(os.path.abspath(dst), date_ival)
 
         self.cleanup = cleanup
         self.checkonly = checkonly
-        self.incremental = incremental
-        self.incremental_basedir = os.path.abspath(incremental_basedir) if incremental_basedir else None
         self.quiet = quiet
 
         self.logger = self.get_logger()
@@ -86,31 +85,35 @@ class CauSync(object):
             self.run_sync()
 
     def run_sync(self):
-        """ This function is executed when the task argument is 'sync'. """
+        """ This is the backup function.
+            It is executed when the task argument is 'sync'.
+        """
 
         curdate = datetime.now().strftime(config.DATE_FORMAT)
         extra_flags = ""
 
-        if self.incremental:
-            if not self.incremental_basedir:
-                self.incremental_basedir = self.find_incremental_basedir()
-            inc_basedir_dirname = self.get_basename(self.incremental_basedir)
+        self.makedirs(self.dst_abs)
 
-            dst = os.path.abspath("{dst}/{bd}_inc_{d}".format(dst=self.dst_abs,
-                                                              bd=inc_basedir_dirname,
-                                                              d=curdate))
+        if not self.no_incremental:
+            incremental_basedirs = self.find_latest_backups(os.listdir(self.dst_abs), self.config.BACKUPS_LINK_DEST_COUNT)
+            if incremental_basedirs != []:
+                self.logger.debug("inc_basedirs={}".format(incremental_basedirs))
+                self.logger.info("found incremental basedirs, using them in --link-dest")
 
-            extra_flags = "--link-dest={}".format(self.incremental_basedir)
+                for basedir in incremental_basedirs:
+                    extra_flags += " --link-dest={} ".format(basedir)
+            else:
+                self.logger.info("incremental basedirs not found, skipping --link-dest")
 
-        else:
-            dst = os.path.abspath("{dst}/{src}_{d}".format(dst=self.dst_abs,
-                                                           src=self.get_basename(self.src_abs),
-                                                           d=curdate))
-
+        dst = os.path.abspath("{dst}/{src}_{d}".format(dst=self.dst_abs,
+                                                       src=self.get_basename(self.src_abs),
+                                                       d=curdate))
         cmd = "rsync {f} {ef} {src} {dst}".format(f=self.config.RSYNC_FLAGS,
                                                   ef=extra_flags,
                                                   src=self.src_abs,
                                                   dst=dst)
+
+        self.logger.debug("rsync cmd = {}".format(cmd))
 
         self.logger.info("syncing {} to {}".format(self.src_abs, dst))
         self.create_lockfile()
@@ -122,6 +125,15 @@ class CauSync(object):
         self.logger.info("sync finished")
 
         return result
+
+    def makedirs(self, path):
+        """ Recursively creates a directory (mostly used for destination dir). """
+        try:
+            os.makedirs(path, exist_ok=True)
+            return True
+        except OSError as e:
+            self.logger.error(e)
+            exit(1)
 
     def get_parent_dir(self, path):
         """ Returns the parent directory of the path argument.
@@ -163,78 +175,76 @@ class CauSync(object):
         """
 
         try:
-            dirdate = "_".join(dirname.rsplit('_', 2)[1:])
-            dirdate = datetime.strptime(dirdate, config.DATE_FORMAT)
+            dirdate = dirname.split('_', 1)[1]
+            dirdate = datetime.strptime(dirdate, self.config.DATE_FORMAT)
             return dirdate
         except ValueError as e:
             self.logger.error(e)
             exit(1)
 
-    def find_incremental_basedir(self):
-        """ Returns the latest basedir of the last backup. """
+    def find_latest_backups(self, dirnames, count=5):
+        """ Returns the latest daily backup directory names. """
 
-        dirnames = os.listdir(self.dst_abs)
-        dirdates = []
-        self.logger.debug(dirnames)
-        basename = self.get_basename(self.src_abs)
+        if len(dirnames) == 0:
+            return []
 
-        for dirname in dirnames:
-            if basename not in dirname:
-                continue
-            elif self.incremental and "_inc_" in dirname:
-                continue
-            else:
-                dirdates.append(self.get_dirdate(dirname))
+        # extract dates from directory names and sort them
+        dirdates = [ self.get_dirdate(d) for d in dirnames ]
+        dirdates.sort(reverse=True)
 
-        dirdates.sort()
-        self.logger.debug(dirdates)
-        basedir = "{}_{}".format(self.get_basename(self.src_abs), dirdates[-1].strftime(config.DATE_FORMAT))
-        self.logger.debug("basedir = " + basedir)
+        # determine list length (if len < delete count, we don't do anything)
+        list_len = count if len(dirdates) >= count else len(dirdates)
+        # get a reverse sorted list of dirdates (descending by date)
+        latest_dates = dirdates[:list_len]
+        # convert them to string for rsync --link-dest (example: datetime obj becomes 'YYMMHH' string)
+        latest_dates = [ i.strftime(config.DATE_FORMAT) for i in latest_dates ]
+        # join them with the source directory basename (example: 'sourcedir_YYMMHH')
+        latest_dates = [ "{}_{}".format(self.get_basename(self.src_abs), i) for i in latest_dates ]
+        # join each one with the destination directory (example: '/path/dest/sourcedir_YYMMHH'
+        latest_dates = [ os.path.join(self.dst_abs, i) for i in latest_dates ]
 
-        return os.path.join(self.dst_abs, basedir)
+        return latest_dates
+
+    def find_old_backups(self, dirnames, ival='daily'):
+        """ Returns old backups we should delete. """
+
+        # extract dates from directory names and sort them
+        dirdates = [ self.get_dirdate(d) for d in dirnames ]
+        dirdates.sort(reverse=True)
+        # determine list length (if backup count < delete count, we don't do anything)
+        list_len = len(dirdates) if len(dirdates) <= self.config.BACKUPS_TO_KEEP[ival] else config.BACKUPS_TO_KEEP[ival]
+
+        rmstrings = []
+
+        # walk through deletable dates
+        for d in dirdates[:list_len]:
+            # join destination path with ival (example: /path/dest/daily)
+            rmstring = os.path.join(os.path.abspath(self.dst), ival)
+            # join source basename with date string
+            rmstring = os.path.join(rmstring, '{}_{}'.format(self.get_basename(self.src_abs),
+                                                             d.strftime(self.config.DATE_FORMAT)))
+            rmstrings.append(rmstring)
+
+        return rmstrings
 
     def run_cleanup(self):
-        """ Deletes old backups. You can set (in the config) the count of backups to keep.
+        """ Deletes old backups.
+            You can set how many you want to keep for each date/time interval in config.py.
             This function is executed when the task argument is 'cleanup'.
         """
 
-        dirnames = os.listdir(self.dst_abs)
-        dirdates = []
-        self.logger.debug(dirnames)
+        for ival in ['daily', 'mondays', 'monthly', 'yearly']:
+            try:
+                dirnames = self.find_old_backups(os.listdir(os.path.join(os.path.abspath(self.dst), ival)))
 
-        if self.incremental:
-            basename = self.incremental_basedir.rsplit('/', 1)[1]
-        else:
-            basename = self.src_abs.split('_', 1)[0]
+                for d in dirnames:
+                    rmtree(d)
 
-        self.logger.debug(basename)
+                self.logger.debug("ival={}, delete={}".format(ival, list(dirnames)))
 
-        for dirname in dirnames:
-            if basename not in dirname:
-                continue
-            elif self.incremental and "_inc_" not in dirname:
-                continue
-            #elif incremental and basename in dirname and "_inc_" in dirname:
-            #    dirdates.append(self.get_dirdate(dirname))
-            else:
-                dirdates.append(self.get_dirdate(dirname))
-
-        dirdates.sort()
-
-        keep = dirdates[-5:]
-        delete = dirdates[:-5]
-        self.logger.debug("keep={}".format(keep))
-        self.logger.debug("delete={}".format(delete))
-
-        if self.incremental:
-            rmstring = "{dst}/{bn}_inc_{d}"
-        else:
-            rmstring = "{dst}/{bn}_{d}"
-
-        for dirname in delete:
-            rmtree(rmstring.format(dst=self.dst_abs.rstrip('/'),
-                                   bn=basename,
-                                   d=dirname.strftime(config.DATE_FORMAT)))
+            except FileNotFoundError:
+                # this means one of the ival directories is missing
+                pass
 
         self.logger.info("successfully deleted old backups")
 
@@ -277,16 +287,12 @@ class CauSync(object):
             for the specific source and destination directory is already running.
         """
 
-        cmd = "pgrep -f .*python3.*{}.*{}.*{}".format(self.name, self.src, self.dst)
+        cmd = "pgrep -f '[p]ython3.*{}.*{}.*{}'".format(self.name, self.src, self.dst)
 
         try:
             result = subprocess.check_output(cmd, shell=True).splitlines()
+            self.logger.debug("result={}".format(result))
             self.logger.debug("is_running lines: {}".format(result))
-
-            try:
-                self.pid = result[0].decode()
-            except IndexError:
-                pass
 
             if len(result) > 1:
                 return True
@@ -334,17 +340,19 @@ def parse_args():
 
     parser.add_argument('destination', help='sync destination directory')
 
-    parser.add_argument('--incremental',
-                        dest='incremental',
+    parser.add_argument('--no-incremental',
+                        dest='no_incremental',
                         action='store_true',
                         default=False,
-                        help='incremental backup')
+                        help="don't do incremental backups")
 
-    parser.add_argument('--incremental-basedir',
-                        dest='incremental_basedir',
+    parser.add_argument('-d',
+                        '--date-interval',
+                        dest='date_interval',
                         action='store',
-                        default=None,
-                        help='basedir of full backup')
+                        default='daily',
+                        choices=['yearly', 'monthly', 'mondays', 'daily'],
+                        help="date interval for backups")
 
     parser.add_argument('-q',
                         '--quiet',
@@ -368,8 +376,8 @@ if __name__ == "__main__":
                  args.destination,
                  args.checkonly,
                  args.cleanup,
-                 args.incremental,
-                 args.incremental_basedir,
+                 args.no_incremental,
+                 args.date_interval,
                  args.quiet,
                  args.selfname)
     cs.run()
