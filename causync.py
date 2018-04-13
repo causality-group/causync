@@ -244,8 +244,9 @@ class CauSync(object):
     def rmtree(self, dirnames):
         for d in dirnames:
             try:
-                dname = d.strftime(self.config.DATE_FORMAT)
-                rmtree(os.path.join(self.dst_abs, dname))
+                path = os.path.join(self.dst_abs, d.strftime(self.config.DATE_FORMAT))
+                rmtree(path)
+                self.logger.debug("removed {}".format(path))
             except FileNotFoundError:
                 pass
 
@@ -293,8 +294,8 @@ class CauSync(object):
 
         try:
             result = subprocess.check_output(cmd, shell=True).splitlines()
-            self.logger.debug("result={}".format(result))
-            self.logger.debug("is_running lines: {}".format(result))
+            #self.logger.debug("result={}".format(result))
+            self.logger.debug("is_running() lines: {}".format(result))
 
             if len(result) > 1:
                 return True
