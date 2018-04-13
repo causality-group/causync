@@ -8,7 +8,7 @@ from shutil import rmtree
 import sys
 from argparse import ArgumentParser
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config
 
@@ -19,10 +19,8 @@ class CauSync(object):
             config (module): config module is passed to CauSync here
             src (str): backup source directory, this is backed up to the destination
             dst (str): backup destination directory, this is where source is backed up to
-            checkonly (bool): if True, CauSync only check if it is running on the specified directories (source, dest)
-            cleanup (bool): if True, CauSync deletes old backups - see run_cleanup()
+            task (str): contains the task to execute
             no_incremental (bool): if True, CauSync doesn't do incremental backups
-            date_ival (string): select date interval for backups (daily, monthly, etc)
             quiet (bool): if set to True, CauSync doesn't print anything to console
             selfname (string): the program's name, should be copied from sys.argv[0], used by is_running()
 
@@ -32,35 +30,19 @@ class CauSync(object):
             dst_abs (string): absolute path of destination directory, joined with date_ival
             logger (object): the logger object used for logging to file/console
     """
-    def __init__(self,
-                 config,
-                 src,
-                 dst,
-                 checkonly=False,
-                 cleanup=False,
-                 no_incremental=False,
-                 date_ival='daily',
-                 quiet=False,
-                 selfname="causync.py"):
-
+    def __init__(self, config, src, dst, task, no_incremental=False, quiet=False, selfname="causync.py"):
         self.config = config
         self.name = selfname
-
         self.pid = os.getpid()
-
         self.no_incremental = no_incremental
-        self.date_ival = date_ival
 
         self.src = src
         self.src_abs = os.path.abspath(self.src)
-
         self.dst = dst
-        self.dst_abs = os.path.join(os.path.abspath(dst), date_ival)
+        self.dst_abs = os.path.abspath(dst)
 
-        self.cleanup = cleanup
-        self.checkonly = checkonly
+        self.task = task
         self.quiet = quiet
-
         self.logger = self.get_logger()
 
     def run(self):
@@ -71,18 +53,15 @@ class CauSync(object):
 
         self.logger.info("started with PID {}".format(self.pid))
 
-        if self.cleanup:
+        if self.task == 'cleanup':
             self.run_cleanup()
-            exit(0)
-        else:
+        elif self.task in ['check', 'sync']:
             if lockfile_exists or is_running:
                 self.logger.info("causync is already running on {}".format(self.src_abs))
-                exit(1)
             else:
                 self.logger.info("causync is not already running on {}".format(self.src_abs))
-
-        if not self.checkonly:
-            self.run_sync()
+                if self.task == 'sync':
+                    self.run_sync()
 
     def run_sync(self):
         """ This is the backup function.
@@ -105,9 +84,7 @@ class CauSync(object):
             else:
                 self.logger.info("incremental basedirs not found, skipping --link-dest")
 
-        dst = os.path.abspath("{dst}/{src}_{d}".format(dst=self.dst_abs,
-                                                       src=self.get_basename(self.src_abs),
-                                                       d=curdate))
+        dst = os.path.abspath(os.path.join(self.dst_abs, curdate))
         cmd = "rsync {f} {ef} {src} {dst}".format(f=self.config.RSYNC_FLAGS,
                                                   ef=extra_flags,
                                                   src=self.src_abs,
@@ -167,7 +144,8 @@ class CauSync(object):
 
         src_parent_dir = self.get_parent_dir(self.src_abs)
         src_basedir = self.get_basename(self.src_abs)
-        return "{}/{}.lock".format(src_parent_dir, src_basedir)
+        src_basedir = "{}.lock".format(src_basedir)
+        return os.path.join(src_parent_dir, src_basedir)
 
     def get_dirdate(self, dirname):
         """ Returns the date extracted from a backup directory name.
@@ -175,8 +153,9 @@ class CauSync(object):
         """
 
         try:
-            dirdate = dirname.split('_', 1)[1]
-            dirdate = datetime.strptime(dirdate, self.config.DATE_FORMAT)
+            if isinstance(dirname, datetime):
+                return dirname
+            dirdate = datetime.strptime(dirname, self.config.DATE_FORMAT)
             return dirdate
         except ValueError as e:
             self.logger.error(e)
@@ -198,34 +177,45 @@ class CauSync(object):
         latest_dates = dirdates[:list_len]
         # convert them to string for rsync --link-dest (example: datetime obj becomes 'YYMMHH' string)
         latest_dates = [ i.strftime(config.DATE_FORMAT) for i in latest_dates ]
-        # join them with the source directory basename (example: 'sourcedir_YYMMHH')
-        latest_dates = [ "{}_{}".format(self.get_basename(self.src_abs), i) for i in latest_dates ]
         # join each one with the destination directory (example: '/path/dest/sourcedir_YYMMHH'
         latest_dates = [ os.path.join(self.dst_abs, i) for i in latest_dates ]
 
         return latest_dates
 
-    def find_old_backups(self, dirnames, ival='daily'):
-        """ Returns old backups we should delete. """
+    def find_old_backups(self, dirnames, ival='daily', count=5):
+        """ Returns old backups we should delete.
+            The time interval is specified by 'ival'. Examples: daily, weekly, monthly, yearly.
+        """
+
+        curdate = datetime.now()
+        multiplier = timedelta(days=self.config.BACKUP_MULTIPLIERS[ival])
 
         # extract dates from directory names and sort them
-        dirdates = [ self.get_dirdate(d) for d in dirnames ]
+        dirdates = list(sorted([ self.get_dirdate(d) for d in dirnames ]))
+
+        (keep, delete) = (list(), list())
+
+        for d in dirdates:
+            m = multiplier * count + multiplier
+            keepdate = curdate - m
+
+            if ival == 'yearly' and d.day != 1 and d.month != 1:
+                continue
+            elif ival == 'monthly' and d.day != 1:
+                continue
+            elif ival == 'weekly' and d.weekday() != 0:
+                continue
+
+            if d > keepdate:
+                keep.append(d)
+            else:
+                delete.append(d)
+
+        delete.sort(reverse=True)
         dirdates.sort(reverse=True)
-        # determine list length (if backup count < delete count, we don't do anything)
-        list_len = len(dirdates) if len(dirdates) <= self.config.BACKUPS_TO_KEEP[ival] else config.BACKUPS_TO_KEEP[ival]
+        keep.sort(reverse=True)
 
-        rmstrings = []
-
-        # walk through deletable dates
-        for d in dirdates[:list_len]:
-            # join destination path with ival (example: /path/dest/daily)
-            rmstring = os.path.join(os.path.abspath(self.dst), ival)
-            # join source basename with date string
-            rmstring = os.path.join(rmstring, '{}_{}'.format(self.get_basename(self.src_abs),
-                                                             d.strftime(self.config.DATE_FORMAT)))
-            rmstrings.append(rmstring)
-
-        return rmstrings
+        return keep, delete
 
     def run_cleanup(self):
         """ Deletes old backups.
@@ -233,20 +223,32 @@ class CauSync(object):
             This function is executed when the task argument is 'cleanup'.
         """
 
-        for ival in ['daily', 'mondays', 'monthly', 'yearly']:
-            try:
-                dirnames = self.find_old_backups(os.listdir(os.path.join(os.path.abspath(self.dst), ival)))
+        listdir = os.listdir(self.dst_abs)
 
-                for d in dirnames:
-                    rmtree(d)
+        yearly = self.find_old_backups(listdir, 'yearly', self.config.BACKUPS_TO_KEEP['yearly'])
+        monthly = self.find_old_backups(listdir, 'monthly', self.config.BACKUPS_TO_KEEP['monthly'])
+        weekly = self.find_old_backups(listdir, 'weekly', self.config.BACKUPS_TO_KEEP['weekly'])
+        daily = self.find_old_backups(listdir, 'daily', self.config.BACKUPS_TO_KEEP['daily'])
 
-                self.logger.debug("ival={}, delete={}".format(ival, list(dirnames)))
+        monthly = [monthly[0], set(monthly[1]) - set(yearly[0])]
+        weekly = [weekly[0], set(weekly[1]) - set(yearly[0]) - set(monthly[0])]
+        daily = [daily[0], set(daily[1]) - set(monthly[0]) - set(weekly[0]) - set(yearly[0])]
 
-            except FileNotFoundError:
-                # this means one of the ival directories is missing
-                pass
+        self.rmtree(list(sorted(yearly[1])))
+        self.rmtree(list(sorted(monthly[1])))
+        self.rmtree(list(sorted(weekly[1])))
+        self.rmtree(list(sorted(daily[1])))
 
         self.logger.info("successfully deleted old backups")
+
+    def rmtree(self, dirnames):
+        for d in dirnames:
+            try:
+                dname = d.strftime(self.config.DATE_FORMAT)
+                rmtree(os.path.join(self.dst_abs, dname))
+            except FileNotFoundError:
+                pass
+
 
     def create_lockfile(self):
         """ Creates a lockfile at sync source directory. """
@@ -346,14 +348,6 @@ def parse_args():
                         default=False,
                         help="don't do incremental backups")
 
-    parser.add_argument('-d',
-                        '--date-interval',
-                        dest='date_interval',
-                        action='store',
-                        default='daily',
-                        choices=['yearly', 'monthly', 'mondays', 'daily'],
-                        help="date interval for backups")
-
     parser.add_argument('-q',
                         '--quiet',
                         action='store_true',
@@ -363,8 +357,6 @@ def parse_args():
     arguments = parser.parse_args()
 
     arguments.selfname = sys.argv[0]
-    arguments.checkonly = True if arguments.task == 'check' else False
-    arguments.cleanup = True if arguments.task == 'cleanup' else False
 
     return arguments
 
@@ -374,10 +366,8 @@ if __name__ == "__main__":
     cs = CauSync(config,
                  args.source,
                  args.destination,
-                 args.checkonly,
-                 args.cleanup,
+                 args.task,
                  args.no_incremental,
-                 args.date_interval,
                  args.quiet,
                  args.selfname)
     cs.run()

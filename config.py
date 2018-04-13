@@ -9,9 +9,16 @@ LOGLEVEL=10
 BACKUPS_LINK_DEST_COUNT=5
 BACKUPS_TO_KEEP = {
     'yearly': 1,
-    'monthly': 3,
-    'mondays': 3,
-    'daily': 3
+    'monthly': 4,
+    'weekly': 1,
+    'daily': 5
+}
+
+BACKUP_MULTIPLIERS = {
+    'yearly': 365,
+    'monthly': 31,
+    'weekly': 7,
+    'daily': 1
 }
 
 RSYNC_FLAGS=(
