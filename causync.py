@@ -30,7 +30,10 @@ class CauSync(object):
             dst_abs (string): absolute path of destination directory, joined with date_ival
             logger (object): the logger object used for logging to file/console
     """
-    def __init__(self, config, src, dst, task, no_incremental=False, quiet=False, selfname="causync.py"):
+
+    curdate = None
+
+    def __init__(self, config, src, dst, task, no_incremental=False, quiet=False, dry_run=False, selfname="causync.py"):
         self.config = config
         self.name = selfname
         self.pid = os.getpid()
@@ -43,6 +46,8 @@ class CauSync(object):
 
         self.task = task
         self.quiet = quiet
+        self.dry_run = dry_run
+        self.curdate = datetime.now()
         self.logger = self.get_logger()
 
     def run(self):
@@ -53,6 +58,8 @@ class CauSync(object):
 
         self.logger.info("started with PID {}".format(self.pid))
 
+        if self.dry_run:
+            self.logger.info("doing dry run")
         if self.task == 'cleanup':
             self.run_cleanup()
         elif self.task in ['check', 'sync']:
@@ -68,8 +75,11 @@ class CauSync(object):
             It is executed when the task argument is 'sync'.
         """
 
-        curdate = datetime.now().strftime(config.DATE_FORMAT)
+        self.curdate = datetime.now().strftime(config.DATE_FORMAT)
         extra_flags = ""
+
+        if self.dry_run:
+            extra_flags += " -n "
 
         self.makedirs(self.dst_abs)
 
@@ -84,7 +94,7 @@ class CauSync(object):
             else:
                 self.logger.info("incremental basedirs not found, skipping --link-dest")
 
-        dst = os.path.abspath(os.path.join(self.dst_abs, curdate))
+        dst = os.path.abspath(os.path.join(self.dst_abs, self.curdate))
         cmd = "rsync {f} {ef} {src} {dst}".format(f=self.config.RSYNC_FLAGS,
                                                   ef=extra_flags,
                                                   src=self.src_abs,
@@ -184,10 +194,9 @@ class CauSync(object):
 
     def find_old_backups(self, dirnames, ival='daily', count=5):
         """ Returns old backups we should delete.
-            The time interval is specified by 'ival'. Examples: daily, weekly, monthly, yearly.
+            The time interval is specified by 'ival'. Values: daily, weekly, monthly, yearly.
         """
 
-        curdate = datetime.now()
         multiplier = timedelta(days=self.config.BACKUP_MULTIPLIERS[ival])
 
         # extract dates from directory names and sort them
@@ -196,23 +205,22 @@ class CauSync(object):
         (keep, delete) = (list(), list())
 
         for d in dirdates:
-            m = multiplier * count + multiplier
-            keepdate = curdate - m
+            m = multiplier * count
+            keepdate = self.curdate - m - multiplier
 
-            if ival == 'yearly' and d.day != 1 and d.month != 1:
+            if ival == 'yearly' and (d.day != 1 or d.month != 1):
                 continue
             elif ival == 'monthly' and d.day != 1:
                 continue
             elif ival == 'weekly' and d.weekday() != 0:
                 continue
-
-            if d > keepdate:
-                keep.append(d)
             else:
-                delete.append(d)
+                if d > keepdate:
+                    keep.append(d)
+                else:
+                    delete.append(d)
 
         delete.sort(reverse=True)
-        dirdates.sort(reverse=True)
         keep.sort(reverse=True)
 
         return keep, delete
@@ -225,19 +233,30 @@ class CauSync(object):
 
         listdir = os.listdir(self.dst_abs)
 
+        # find_old_backups() works like this:
+        # yearly[0] values are yearly dates we keep AND all backups after that
+        #   (date > now - KEEP_COUNT)
+        #   This results in yearly keep list + the rest of the dates (monthly + weekly + daily)
+        # yearly[1] contains old yearly backups we should delete
+        #   (date < now - KEEP_COUNT)
         yearly = self.find_old_backups(listdir, 'yearly', self.config.BACKUPS_TO_KEEP['yearly'])
+        # monthly[0] contains monthly dates we keep AND all backups after that: weekly, daily
+        # monthly[1] contains dates that are less than what we keep, INCLUDING yearly
         monthly = self.find_old_backups(listdir, 'monthly', self.config.BACKUPS_TO_KEEP['monthly'])
+        # same logic as above
         weekly = self.find_old_backups(listdir, 'weekly', self.config.BACKUPS_TO_KEEP['weekly'])
         daily = self.find_old_backups(listdir, 'daily', self.config.BACKUPS_TO_KEEP['daily'])
 
+        # since monthly[1] also contains yearly dates we want to keep,
+        #   we subtract these, the result is a correct monthly delete list
         monthly = [monthly[0], set(monthly[1]) - set(yearly[0])]
+        # same logic as above, weekly[1] contains yearly and monthly,
+        #   because their date value is less than weekly
         weekly = [weekly[0], set(weekly[1]) - set(yearly[0]) - set(monthly[0])]
         daily = [daily[0], set(daily[1]) - set(monthly[0]) - set(weekly[0]) - set(yearly[0])]
 
-        self.rmtree(list(sorted(yearly[1])))
-        self.rmtree(list(sorted(monthly[1])))
-        self.rmtree(list(sorted(weekly[1])))
-        self.rmtree(list(sorted(daily[1])))
+        d = set(list(yearly[1]) + list(monthly[1]) + list(weekly[1]) + list(daily[1]))
+        self.rmtree(sorted(d))
 
         self.logger.info("successfully deleted old backups")
 
@@ -245,7 +264,8 @@ class CauSync(object):
         for d in dirnames:
             try:
                 path = os.path.join(self.dst_abs, d.strftime(self.config.DATE_FORMAT))
-                rmtree(path)
+                if not self.dry_run:
+                    rmtree(path)
                 self.logger.debug("removed {}".format(path))
             except FileNotFoundError:
                 pass
@@ -349,12 +369,18 @@ def parse_args():
                         default=False,
                         help="don't do incremental backups")
 
+    parser.add_argument('-n',
+                        '--dry-run',
+                        dest='dry_run',
+                        action='store_true',
+                        default=False,
+                        help="do a dry run")
+
     parser.add_argument('-q',
                         '--quiet',
                         action='store_true',
                         default=False,
                         help="don't print to console")
-
     arguments = parser.parse_args()
 
     arguments.selfname = sys.argv[0]
@@ -370,5 +396,6 @@ if __name__ == "__main__":
                  args.task,
                  args.no_incremental,
                  args.quiet,
+                 args.dry_run,
                  args.selfname)
     cs.run()
