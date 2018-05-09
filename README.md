@@ -63,7 +63,24 @@ total size is 20  speedup is 0.12
 2018-05-02 13:36:07,095 INFO sync finished                                  
 ```  
 
-Example
+## Sync from multiple sources
+
+Pass multiple sources to rsync.
+
+Example:
+```sh
+python3 causync.py sync /var/www/localhost/site1 /var/www/localhost/site2 /backups/sites
+```
+
+## Sync with `--exclude`
+
+Pass multiple exclude parameters or an exclude file to rsync with this functionality.
+
+Example: 
+```sh
+python3 causync.py sync --exclude=index.html /var/www/localhost/site /backups/site
+python3 causync.py sync --exclude-from=exclude_list.txt /var/www/localhost/site /backups/site
+```
 
 ## Cleanup
 
