@@ -22,12 +22,17 @@ class CauSync(object):
             task (str): contains the task to execute
             no_incremental (bool): if True, CauSync doesn't do incremental backups
             quiet (bool): if set to True, CauSync doesn't print anything to console
-            selfname (string): the program's name, should be copied from sys.argv[0], used by is_running()
+            dry_run (bool): same as rsync's -n argument, does a dry run
+            selfname (str): the program's name, should be copied from sys.argv[0], used by is_running()
+            excludes(str|list): string or list of files to exclude
+            exclude_from(str): exclude file
+            loglevel(int): logging level (see config or help(logging)
 
         Attributes:
             pid (int): PID of the current process
-            src_abs (string): absolute path of source directory
-            dst_abs (string): absolute path of destination directory, joined with date_ival
+            src_abs (list): list containing source directory absolute paths
+            dst_abs (str): absolute path of destination directory, joined with date_ival
+            curdate (datetime): datetime object containing the current date
             logger (object): the logger object used for logging to file/console
     """
 
@@ -175,6 +180,7 @@ class CauSync(object):
         return basename
 
     def check_lockfiles(self):
+        """ check if logfiles exist for all source directories """
         result = False
         for path in self.src_abs:
             result = True if self.lockfile_exists(path) else False
@@ -405,6 +411,7 @@ class CauSync(object):
         return logger
 
     def parse_exclude_file(self, fname):
+        """ Read exclude file and return a list of paths """
         excludes = list()
 
         with open(fname, 'r') as f:
