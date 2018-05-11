@@ -71,6 +71,7 @@ class CauSync(object):
         self.curdate = datetime.now()
         self.logger = self.get_logger(loglevel, verbose)
         signal.signal(signal.SIGINT, self.signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
 
     def parse_src(self, src):
         """ Parses source directory arguments into a list. """
@@ -97,9 +98,11 @@ class CauSync(object):
             self.logger.info("doing dry run")
 
         if self.task == 'cleanup':
-            self.create_pidfile()
-            self.run_cleanup()
-            self.remove_pidfile()
+            try:
+                self.create_pidfile()
+                self.run_cleanup()
+            finally:
+                self.remove_pidfile()
 
         elif self.task in ['check', 'sync']:
 
@@ -109,12 +112,14 @@ class CauSync(object):
             else:
                 self.logger.info("causync is not running yet on {}".format(", ".join(self.src_abs)))
                 if self.task == 'sync':
-                    self.create_pidfile()
-                    self.run_sync()
-                    self.remove_pidfile()
+                    try:
+                        self.create_pidfile()
+                        self.run_sync()
+                    finally:
+                        self.remove_pidfile()
 
     def signal_handler(self, signum, frame):
-        self.logger.info("received SIGINT, removing PIDFILE")
+        self.logger.info("received SIGINT ({}, {}), removing PIDFILE".format(signum, frame))
         self.remove_pidfile()
 
     def create_pidfile(self):
