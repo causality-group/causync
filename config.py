@@ -2,8 +2,10 @@
 # config file for causync
 
 LOGFILE = "causync.log"
-# debug=10, info=20, warning=30, error=40, critical=50
-LOGLEVEL = 10
+PIDFILE = "/tmp/causync.pid"
+
+# choices: ['debug', 'info', 'warning', 'error', 'critical']
+LOGLEVEL = 'debug'
 
 # how many backups should we get
 BACKUPS_LINK_DEST_COUNT = 5
@@ -28,3 +30,6 @@ RSYNC_FLAGS = (
 )
 
 DATE_FORMAT = "%Y%m%d"
+
+# use pgrep to determine whether CS is running with the same arguments
+CHECK_PGREP = True

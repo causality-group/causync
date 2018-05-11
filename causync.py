@@ -9,6 +9,8 @@ import sys
 from argparse import ArgumentParser
 import subprocess
 from datetime import datetime, timedelta
+import signal
+
 import config as conf
 
 
@@ -24,9 +26,11 @@ class CauSync(object):
             quiet (bool): if set to True, CauSync doesn't print anything to console
             dry_run (bool): same as rsync's -n argument, does a dry run
             selfname (str): the program's name, should be copied from sys.argv[0], used by is_running()
-            excludes(str|list): string or list of files to exclude
-            exclude_from(str): exclude file
-            loglevel(int): logging level (see config or help(logging)
+            excludes (str|list): string or list of files to exclude
+            exclude_from (str): exclude file
+            loglevel (str): logging level (see config or help(logging)
+            verbose (bool): increase verbosity by one step
+            pidfile (str): file containing the process ID
 
         Attributes:
             pid (int): PID of the current process
@@ -37,18 +41,21 @@ class CauSync(object):
     """
 
     curdate = None
-    multiple_sources = False
 
     def __init__(self, config, src, dst, task, no_incremental=False, quiet=False,
                  dry_run=False, selfname="causync.py", excludes=None, exclude_from=False,
-                 loglevel=None):
+                 loglevel=None, verbose=False, pidfile=None):
+
         self.config = config
         self.name = selfname
         self.pid = os.getpid()
+        if pidfile:
+            self.config.PIDFILE = pidfile
+
         self.no_incremental = no_incremental
         self.excludes = excludes if excludes else []
         if exclude_from:
-            self.excludes = self.excludes + self.parse_exclude_file(exclude_from)
+            self.excludes = self.excludes + CauSync.parse_exclude_file(exclude_from)
 
         self.src = src
         self.src_abs = self.parse_src(self.src)
@@ -62,14 +69,15 @@ class CauSync(object):
         self.quiet = quiet
         self.dry_run = dry_run
         self.curdate = datetime.now()
-        self.logger = self.get_logger(loglevel)
+        self.logger = self.get_logger(loglevel, verbose)
+        signal.signal(signal.SIGINT, self.signal_handler)
 
     def parse_src(self, src):
-        if type(src) == type(list()):
-            self.multiple_sources = True if len(src) > 1 else False
+        """ Parses source directory arguments into a list. """
+        if isinstance(src, list):
             return [os.path.abspath(i) for i in src]
-        elif type(self.src) == str:
-            return [os.path.abspath(self.src)]
+        elif type(src) == str:
+            return [os.path.abspath(src)]
         else:
             self.logger.error("source directory type error")
             return False
@@ -77,31 +85,61 @@ class CauSync(object):
     def run(self):
         """ Main run function. """
 
-        is_running = self.is_running()
-        lockfile_exists = self.check_lockfiles()
+        pidfile_exists = os.path.isfile(self.config.PIDFILE)
+        is_running = self.is_running() if self.config.CHECK_PGREP else False
 
         self.logger.info("started with PID {}".format(self.pid))
-        if self.multiple_sources:
+
+        if len(self.src_abs) > 1:
             self.logger.info("syncing multiple source directories")
 
         if self.dry_run:
             self.logger.info("doing dry run")
+
         if self.task == 'cleanup':
+            self.create_pidfile()
             self.run_cleanup()
+            self.remove_pidfile()
+
         elif self.task in ['check', 'sync']:
-            if lockfile_exists or is_running:
-                self.logger.info("causync is already running on {}".format(", ".join(self.src_abs)))
+
+            if pidfile_exists or is_running:
+                self.logger.info(
+                    "causync is already running on {} or the default pidfile exists".format(", ".join(self.src_abs)))
             else:
-                self.logger.info("causync is not already running on {}".format(", ".join(self.src_abs)))
+                self.logger.info("causync is not running yet on {}".format(", ".join(self.src_abs)))
                 if self.task == 'sync':
+                    self.create_pidfile()
                     self.run_sync()
+                    self.remove_pidfile()
+
+    def signal_handler(self, signum, frame):
+        self.logger.info("received SIGINT, removing PIDFILE")
+        self.remove_pidfile()
+
+    def create_pidfile(self):
+        self.logger.debug("creating pidfile {}".format(self.config.PIDFILE))
+        try:
+            with open(self.config.PIDFILE, 'w') as f:
+                f.write(str(self.pid))
+        except IOError as e:
+            self.logger.error(e)
+            exit(-1)
+
+    def remove_pidfile(self):
+        self.logger.debug("removing pidfile {}".format(self.config.PIDFILE))
+        try:
+            os.remove(self.config.PIDFILE)
+        except IOError as e:
+            self.logger.error(e)
+            exit(-1)
 
     def run_sync(self):
         """ This is the backup function.
             It is executed when the task argument is 'sync'.
         """
 
-        self.curdate = datetime.now().strftime(config.DATE_FORMAT)
+        self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
         extra_flags = ""
 
         if self.dry_run:
@@ -111,11 +149,12 @@ class CauSync(object):
             for e in self.excludes:
                 extra_flags += " --exclude={} ".format(e)
 
-        self.makedirs(self.dst_abs)
+        CauSync.makedirs(self.dst_abs)
 
         if not self.no_incremental:
-            incremental_basedirs = self.find_latest_backups(os.listdir(self.dst_abs), self.config.BACKUPS_LINK_DEST_COUNT)
-            if incremental_basedirs != []:
+            incremental_basedirs = self.find_latest_backups(os.listdir(self.dst_abs),
+                                                            self.config.BACKUPS_LINK_DEST_COUNT)
+            if incremental_basedirs:
                 self.logger.debug("inc_basedirs={}".format(incremental_basedirs))
                 self.logger.info("found incremental basedirs, using them in --link-dest")
 
@@ -132,66 +171,13 @@ class CauSync(object):
 
         self.logger.debug("rsync command is: {}".format(cmd))
         self.logger.info("syncing {} to {}".format(self.src_abs, dst))
-        self.create_lockfiles()
 
         result = subprocess.check_output(cmd, shell=True).decode()
         self.logger.debug(result)
 
-        self.remove_lockfiles()
         self.logger.info("sync finished")
 
         return result
-
-    def makedirs(self, path):
-        """ Recursively creates a directory (mostly used for destination dir). """
-        try:
-            os.makedirs(path, exist_ok=True)
-            return True
-        except OSError as e:
-            self.logger.error(e)
-            exit(1)
-
-    def get_parent_dir(self, path):
-        """ Returns the parent directory of the path argument.
-            Example: path '/tmp/causync/test' results in '/tmp/causync'.
-        """
-
-        if path == '/': return '/'
-        path = path.rstrip('/')
-        if path == '': raise ValueError(path)
-        path = os.path.normpath(path)
-        path = os.path.dirname(path)
-        if '//' in path: raise ValueError(path)
-
-        return path
-
-    def get_basename(self, path):
-        """ Returns the baseneme of the path argument.
-            Example: path '/tmp/causync/test' results in 'test'.
-        """
-
-        if path == '/': raise ValueError(path)
-        path = path.rstrip('/')
-        if path == '': raise ValueError(path)
-        basename = os.path.basename(path)
-        if '//' in basename: raise ValueError(basename)
-
-        return basename
-
-    def check_lockfiles(self):
-        """ check if logfiles exist for all source directories """
-        result = False
-        for path in self.src_abs:
-            result = True if self.lockfile_exists(path) else False
-        return result
-
-    def get_lockfile_path(self, path):
-        """ Returns the lockfile path, depends on the source directory. """
-
-        src_parent_dir = self.get_parent_dir(path)
-        src_basedir = self.get_basename(path)
-        src_basedir = "{}.lock".format(src_basedir)
-        return os.path.join(src_parent_dir, src_basedir)
 
     def get_dirdate(self, dirname):
         """ Returns the date extracted from a backup directory name.
@@ -308,52 +294,6 @@ class CauSync(object):
             except FileNotFoundError:
                 pass
 
-    def create_lockfile(self, path):
-        """ Creates a lockfile at the specified path. """
-
-        lockfile = self.get_lockfile_path(path)
-        self.logger.debug("creating lockfile {}".format(lockfile))
-
-        try:
-            open(lockfile, 'a').close()
-            return True
-
-        except IOError as e:
-            self.logger.error(e)
-
-    def create_lockfiles(self):
-        """ Creates lockfiles at sync source directories. """
-        for path in self.src_abs:
-            self.create_lockfile(path)
-        return True
-
-    def remove_lockfile(self, path):
-        """ Removes an existing lockfile at the specified path. """
-
-        lockfile = self.get_lockfile_path(path)
-        self.logger.debug("removing lockfile {}".format(lockfile))
-
-        try:
-            os.remove(lockfile)
-            return True
-
-        except IOError as e:
-            self.logger.error(e)
-
-    def remove_lockfiles(self):
-        """ Removes lockfiles related to sync source directories. """
-        for path in self.src_abs:
-            self.remove_lockfile(path)
-        return True
-
-    def lockfile_exists(self, path):
-        """ Checks if lockfile exists at the specified path. """
-
-        lockfile = self.get_lockfile_path(path)
-        if os.path.isfile(lockfile):
-            return True
-        return False
-
     def is_running(self):
         """ Tries to guess (from processlist) whether sync
             for the specific source and destination directory is already running.
@@ -377,23 +317,29 @@ class CauSync(object):
             self.logger.debug(("command '{}' returned with error "
                                "(code {}): {}").format(e.cmd, e.returncode, e.output))
 
-    def get_logger(self, loglevel=None):
+    def get_logger(self, loglevel=None, verbose=False):
         """ Returns a logger object with the current settings in config.py.
             If the -q (quiet) flag is set, it doesn't log to console.
+            If the -v (verbose) flag is set, it increases logging verbosity by one step.
         """
 
         # please don't change these numbers
-        LOGLEVELS = {'debug': 10,
+        loglevels = {'debug': 10,
                      'info': 20,
                      'warning': 30,
                      'error': 40,
                      'critical': 50}
 
-        if loglevel:
-            self.config.LOGLEVEL = LOGLEVELS[loglevel]
+        if not loglevel:
+            loglevel = loglevels[self.config.LOGLEVEL]
+        else:
+            loglevel = loglevels[loglevel]
+
+        if verbose and loglevel != 10:
+            loglevel -= 10
 
         logger = logging.getLogger()
-        logger.setLevel(self.config.LOGLEVEL)
+        logger.setLevel(loglevel)
         formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
         # logfile handler
@@ -409,7 +355,52 @@ class CauSync(object):
 
         return logger
 
-    def parse_exclude_file(self, fname):
+    @staticmethod
+    def get_parent_dir(path):
+        """ Returns the parent directory of the path argument.
+            Example: path '/tmp/causync/test' results in '/tmp/causync'.
+        """
+
+        if path == '/':
+            return '/'
+
+        path = path.rstrip('/')
+        if path == '':
+            raise ValueError(path)
+
+        path = os.path.normpath(path)
+        path = os.path.dirname(path)
+
+        if '//' in path:
+            raise ValueError(path)
+
+        return path
+
+    @staticmethod
+    def get_basename(path):
+        """ Returns the baseneme of the path argument.
+            Example: path '/tmp/causync/test' results in 'test'.
+        """
+
+        if path == '/':
+            raise ValueError(path)
+        path = path.rstrip('/')
+        if path == '':
+            raise ValueError(path)
+        basename = os.path.basename(path)
+        if '//' in basename:
+            raise ValueError(basename)
+
+        return basename
+
+    @staticmethod
+    def makedirs(path):
+        """ Recursively creates a directory (mostly used for destination dir). """
+        os.makedirs(path, exist_ok=True)
+        return True
+
+    @staticmethod
+    def parse_exclude_file(fname):
         """ Read exclude file and return a list of paths """
         excludes = list()
 
@@ -420,7 +411,6 @@ class CauSync(object):
                     excludes.append(line)
 
         return excludes
-
 
 
 def parse_args():
@@ -472,7 +462,18 @@ def parse_args():
                         action='store',
                         choices=['debug', 'info', 'warning', 'error', 'critical'],
                         default=None,
-                        help="don't print to console")
+                        help="set a custom loglevel if 'info' or -v is not enough")
+
+    parser.add_argument('-v',
+                        '--verbose',
+                        action='store_true',
+                        default=False,
+                        help="increase verbosity (by one step)")
+
+    parser.add_argument('-p',
+                        '--pidfile',
+                        action='store',
+                        help='specify pidfile location')
 
     arguments = parser.parse_args()
 
@@ -494,5 +495,7 @@ if __name__ == "__main__":
                  args.selfname,
                  args.excludes,
                  args.exclude_from,
-                 args.loglevel)
+                 args.loglevel,
+                 args.verbose,
+                 args.pidfile)
     cs.run()
