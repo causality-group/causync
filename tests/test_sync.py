@@ -24,9 +24,11 @@ dst = "./temp/causync_dst"
 curdate = datetime.now()
 curdate_str = curdate.strftime(date_format)
 
+
 def remove_temp():
     # remove ./temp if exists
     rmtree('./temp') if os.path.isdir('./temp') else False
+
 
 def create_temp():
     remove_temp()
@@ -44,7 +46,8 @@ def create_temp():
     # write 3 sentences from lorem ipsum into 3 files
     for i in range(0, 3):
         with open(files[i], 'w') as fp:
-            fp.write(lorem[ lorem_parts[i][0] : lorem_parts[i][1] ])
+            fp.write(lorem[lorem_parts[i][0]: lorem_parts[i][1]])
+
 
 def test_lockfile_after_sync():
     create_temp()
@@ -58,6 +61,7 @@ def test_lockfile_after_sync():
     assert_false(os.path.isfile("{}.lock".format(src)))
 
     remove_temp()
+
 
 def test_dry_run():
     create_temp()
@@ -81,6 +85,7 @@ def test_dry_run():
 
     remove_temp()
 
+
 def test_sync():
     create_temp()
 
@@ -103,7 +108,7 @@ def test_sync():
     # compare testfile contents
     for i in range(0, 3):
         with open(files[i], 'r') as fp:
-            assert_equals(fp.read(), lorem[ lorem_parts[i][0] : lorem_parts[i][1] ])
+            assert_equals(fp.read(), lorem[lorem_parts[i][0]: lorem_parts[i][1]])
 
     remove_temp()
 
@@ -123,11 +128,12 @@ def test_exclude():
              os.path.join(dst, curdate_str, 'causync_src', 'testdir2', 'testfile3')]
 
     # check for file1 and file3
-    [assert_true(os.path.isfile(f)) for f in [files[0] ,files[2]]]
+    [assert_true(os.path.isfile(f)) for f in [files[0], files[2]]]
     # file2 should not exist because of exclude
     assert_false(os.path.isfile(files[1]))
 
     remove_temp()
+
 
 def test_exclude_file():
     create_temp()
@@ -147,7 +153,7 @@ def test_exclude_file():
              os.path.join(dst, curdate_str, 'causync_src', 'testdir2', 'testfile3')]
 
     # check for file1 and file3
-    [assert_false(os.path.isfile(f)) for f in [files[0] ,files[2]]]
+    [assert_false(os.path.isfile(f)) for f in [files[0], files[2]]]
     # file2 should not exist because of exclude
     assert_true(os.path.isfile(files[1]))
 

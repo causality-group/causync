@@ -9,8 +9,8 @@ import sys
 from argparse import ArgumentParser
 import subprocess
 from datetime import datetime, timedelta
+import config as conf
 
-import config
 
 class CauSync(object):
     """ CauSync object for sync-related functions.
@@ -130,8 +130,7 @@ class CauSync(object):
                                                   src=" ".join(self.src_abs),
                                                   dst=dst)
 
-        self.logger.debug("rsync cmd = {}".format(cmd))
-
+        self.logger.debug("rsync command is: {}".format(cmd))
         self.logger.info("syncing {} to {}".format(self.src_abs, dst))
         self.create_lockfiles()
 
@@ -216,7 +215,7 @@ class CauSync(object):
             return []
 
         # extract dates from directory names and sort them
-        dirdates = [ self.get_dirdate(d) for d in dirnames ]
+        dirdates = [self.get_dirdate(d) for d in dirnames]
         dirdates.sort(reverse=True)
 
         # determine list length (if len < delete count, we don't do anything)
@@ -224,9 +223,9 @@ class CauSync(object):
         # get a reverse sorted list of dirdates (descending by date)
         latest_dates = dirdates[:list_len]
         # convert them to string for rsync --link-dest (example: datetime obj becomes 'YYMMHH' string)
-        latest_dates = [ i.strftime(config.DATE_FORMAT) for i in latest_dates ]
+        latest_dates = [i.strftime(self.config.DATE_FORMAT) for i in latest_dates]
         # join each one with the destination directory (example: '/path/dest/sourcedir_YYMMHH'
-        latest_dates = [ os.path.join(self.dst_abs, i) for i in latest_dates ]
+        latest_dates = [os.path.join(self.dst_abs, i) for i in latest_dates]
 
         return latest_dates
 
@@ -238,7 +237,7 @@ class CauSync(object):
         multiplier = timedelta(days=self.config.BACKUP_MULTIPLIERS[ival])
 
         # extract dates from directory names and sort them
-        dirdates = list(sorted([ self.get_dirdate(d) for d in dirnames ]))
+        dirdates = list(sorted([self.get_dirdate(d) for d in dirnames]))
 
         (keep, delete) = (list(), list())
 
@@ -364,7 +363,7 @@ class CauSync(object):
 
         try:
             result = subprocess.check_output(cmd, shell=True).splitlines()
-            #self.logger.debug("result={}".format(result))
+            # self.logger.debug("result={}".format(result))
             self.logger.debug("is_running() lines: {}".format(result))
 
             if len(result) > 1:
@@ -481,10 +480,11 @@ def parse_args():
 
     return arguments
 
+
 if __name__ == "__main__":
     args = parse_args()
 
-    cs = CauSync(config,
+    cs = CauSync(conf,
                  args.sources,
                  args.destination,
                  args.task,

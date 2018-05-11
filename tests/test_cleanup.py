@@ -40,15 +40,15 @@ def remove_temp():
     shutil.rmtree('./temp') if os.path.isdir('./temp') else False
 
 
-def copytree(src, dst, symlinks=False, ignore=None):
-    """ Copied from https://stackoverflow.com/questions/1868714/how-do-i-copy-an-entire-directory-of-files-into-an-existing-directory-using-pyth#12514470 """
+def copytree(source, dest, symlinks=False, ignore=None):
     for item in os.listdir(src):
-        s = os.path.join(src, item)
-        d = os.path.join(dst, item)
+        s = os.path.join(source, item)
+        d = os.path.join(dest, item)
         if os.path.isdir(s):
             shutil.copytree(s, d, symlinks, ignore)
         else:
             shutil.copy2(s, d)
+
 
 def create_temp():
     # create ./temp/causync_src
@@ -68,6 +68,7 @@ def create_temp():
 
     for dirname in dirnames:
         copytree('./temp/causync_src', "./temp/causync_dst/{}/".format(dirname))
+
 
 def test_cleanup():
     remove_temp()
