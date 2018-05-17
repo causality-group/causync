@@ -304,7 +304,7 @@ class CauSync(object):
             for the specific source and destination directory is already running.
         """
 
-        cmd = "pgrep -f '[p]ython3.*{}.*{}.*{}'".format(self.name, " ".join(self.src), self.dst)
+        cmd = "pgrep -f '[p]ython[23].*{}.*{}.*{}'".format(self.name, " ".join(self.src), self.dst)
 
         try:
             result = subprocess.check_output(cmd, shell=True).splitlines()
@@ -401,7 +401,13 @@ class CauSync(object):
     @staticmethod
     def makedirs(path):
         """ Recursively creates a directory (mostly used for destination dir). """
-        os.makedirs(path, exist_ok=True)
+        try:
+            os.makedirs(path)
+        except Exception as e:
+            if e.errno == 17 and e.strerror == "File exists":
+                pass
+            else:
+                raise e
         return True
 
     @staticmethod
