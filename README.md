@@ -27,9 +27,6 @@ $ python3 causync.py check /var/www/localhost/site /backups/site
 Collects previous N number of backups (defined in `config.py`) and calls `rsync` with multiple `--link-dest` arguments to do an "incremental" backup.
 If no previous backups are found, then `--link-dest` is skipped and a "full" backup is created.
 
-The sync task creates a lockfile with the name of the source directory. In the above example this lockfile will be at  
-`/var/www/localhost/site.lock`
-
 Example:
 ```text
 # python3 causync.py sync /var/www/localhost/site /backups/site                                                                                           
