@@ -63,7 +63,7 @@ class CauSync(object):
             exit(-1)
 
         self.dst = dst
-        self.dst_abs = os.path.abspath(dst)
+        self.dst_abs = os.path.realpath(dst)
 
         self.task = task
         self.quiet = quiet
@@ -76,9 +76,9 @@ class CauSync(object):
     def parse_src(self, src):
         """ Parses source directory arguments into a list. """
         if isinstance(src, list):
-            return [os.path.abspath(i) for i in src]
+            return [os.path.realpath(i) for i in src]
         elif type(src) == str:
-            return [os.path.abspath(src)]
+            return [os.path.realpath(src)]
         else:
             self.logger.error("source directory type error")
             return False
@@ -168,7 +168,7 @@ class CauSync(object):
             else:
                 self.logger.info("incremental basedirs not found, skipping --link-dest")
 
-        dst = os.path.abspath(os.path.join(self.dst_abs, self.curdate))
+        dst = os.path.realpath(os.path.join(self.dst_abs, self.curdate))
         cmd = "rsync {f} {ef} {src} {dst}".format(f=self.config.RSYNC_FLAGS,
                                                   ef=extra_flags,
                                                   src=" ".join(self.src_abs),
@@ -194,10 +194,14 @@ class CauSync(object):
             if isinstance(dirname, datetime):
                 return dirname
             dirdate = datetime.strptime(dirname, self.config.DATE_FORMAT)
+            if not isinstance(dirdate, datetime):
+                return False
+
             return dirdate
+
         except ValueError as e:
             self.logger.error(e)
-            exit(1)
+            return False
 
     def find_latest_backups(self, dirnames, count=5):
         """ Returns the latest daily backup directory names. """
@@ -206,7 +210,13 @@ class CauSync(object):
             return []
 
         # extract dates from directory names and sort them
-        dirdates = [self.get_dirdate(d) for d in dirnames]
+        dirdates = []
+
+        for d in dirnames:
+            dd = self.get_dirdate(d)
+            if dd:
+                dirdates.append(dd)
+
         dirdates.sort(reverse=True)
 
         # determine list length (if len < delete count, we don't do anything)
@@ -228,7 +238,14 @@ class CauSync(object):
         multiplier = timedelta(days=self.config.BACKUP_MULTIPLIERS[ival])
 
         # extract dates from directory names and sort them
-        dirdates = list(sorted([self.get_dirdate(d) for d in dirnames]))
+        dirdates = []
+
+        for d in dirnames:
+            dd = self.get_dirdate(d)
+            if dd:
+                dirdates.append(dd)
+
+        dirdates = list(sorted(dirdates))
 
         (keep, delete) = (list(), list())
 
