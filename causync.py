@@ -90,6 +90,7 @@ class CauSync(object):
         is_running = self.is_running() if self.config.CHECK_PGREP else False
 
         self.logger.info("started with PID {}".format(self.pid))
+        self.logger.info("Excludes: {}".format(self.excludes))
 
         if len(self.src_abs) > 1:
             self.logger.info("syncing multiple source directories")
@@ -276,7 +277,11 @@ class CauSync(object):
             This function is executed when the task argument is 'cleanup'.
         """
 
-        listdir = os.listdir(self.dst_abs)
+        try:
+            listdir = os.listdir(self.dst_abs)
+        except FileNotFoundError:
+            self.logger.error("Destination directory doesn't exist.")
+            exit()
 
         # find_old_backups() works like this:
         # yearly[0] values are yearly dates we keep AND all backups after that
@@ -465,7 +470,8 @@ def parse_args():
 
     parser.add_argument('--exclude',
                         dest='excludes',
-                        nargs='+',
+                        action='append',
+                        default=[],
                         help="exclude files matching PATTERN")
 
     parser.add_argument('--exclude-from',
