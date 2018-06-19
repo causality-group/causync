@@ -44,7 +44,7 @@ class CauSync(object):
 
     def __init__(self, config, src, dst, task, no_incremental=False, quiet=False,
                  dry_run=False, selfname="causync.py", excludes=None, exclude_from=False,
-                 loglevel=None, verbose=False, pidfile=None):
+                 loglevel=None, verbose=False, pidfile=None, cleanup=False):
 
         self.config = config
         self.name = selfname
@@ -68,6 +68,8 @@ class CauSync(object):
         self.task = task
         self.quiet = quiet
         self.dry_run = dry_run
+        self.cleanup = cleanup
+
         self.curdate = datetime.now()
         self.logger = self.get_logger(loglevel, verbose)
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -116,6 +118,8 @@ class CauSync(object):
                     try:
                         self.create_pidfile()
                         self.run_sync()
+                        if self.cleanup:
+                            self.run_cleanup()
                     finally:
                         self.remove_pidfile()
 
@@ -145,7 +149,7 @@ class CauSync(object):
             It is executed when the task argument is 'sync'.
         """
 
-        self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
+        #self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
         extra_flags = ""
 
         if self.dry_run:
@@ -169,7 +173,7 @@ class CauSync(object):
             else:
                 self.logger.info("incremental basedirs not found, skipping --link-dest")
 
-        dst = os.path.realpath(os.path.join(self.dst_abs, self.curdate))
+        dst = os.path.realpath(os.path.join(self.dst_abs, self.curdate.strftime(self.config.DATE_FORMAT)))
         cmd = "rsync {f} {ef} {src} {dst}".format(f=self.config.RSYNC_FLAGS,
                                                   ef=extra_flags,
                                                   src=" ".join(self.src_abs),
@@ -276,6 +280,7 @@ class CauSync(object):
             You can set how many you want to keep for each date/time interval in config.py.
             This function is executed when the task argument is 'cleanup'.
         """
+        listdir = None
 
         try:
             listdir = os.listdir(self.dst_abs)
@@ -509,6 +514,11 @@ def parse_args():
                         action='store',
                         help='specify pidfile location')
 
+    parser.add_argument('--cleanup',
+                        action='store_true',
+                        default=False,
+                        help='cleanup after sync')
+
     arguments = parser.parse_args()
 
     arguments.selfname = sys.argv[0]
@@ -531,5 +541,6 @@ if __name__ == "__main__":
                  args.exclude_from,
                  args.loglevel,
                  args.verbose,
-                 args.pidfile)
+                 args.pidfile,
+                 args.cleanup)
     cs.run()
