@@ -44,13 +44,16 @@ class CauSync(object):
 
     def __init__(self, config, src, dst, task, no_incremental=False, quiet=False,
                  dry_run=False, selfname="causync.py", excludes=None, exclude_from=False,
-                 loglevel=None, verbose=False, pidfile=None, cleanup=False):
+                 loglevel=None, verbose=False, pidfile=None, cleanup=False, logfile=None):
 
         self.config = config
         self.name = selfname
         self.pid = os.getpid()
         if pidfile:
             self.config.PIDFILE = pidfile
+
+        if logfile:
+            self.config.LOGFILE = logfile
 
         self.no_incremental = no_incremental
         self.excludes = excludes if excludes else []
@@ -71,7 +74,7 @@ class CauSync(object):
         self.cleanup = cleanup
 
         self.curdate = datetime.now()
-        self.logger = self.get_logger(loglevel, verbose)
+        self.logger = self.get_logger(loglevel, verbose, self.config.LOGFILE)
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
@@ -149,7 +152,7 @@ class CauSync(object):
             It is executed when the task argument is 'sync'.
         """
 
-        #self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
+        # self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
         extra_flags = ""
 
         if self.dry_run:
@@ -349,7 +352,7 @@ class CauSync(object):
             self.logger.debug(("command '{}' returned with error "
                                "(code {}): {}").format(e.cmd, e.returncode, e.output))
 
-    def get_logger(self, loglevel=None, verbose=False):
+    def get_logger(self, loglevel=None, verbose=False, logfile=None):
         """ Returns a logger object with the current settings in config.py.
             If the -q (quiet) flag is set, it doesn't log to console.
             If the -v (verbose) flag is set, it increases logging verbosity by one step.
@@ -375,7 +378,7 @@ class CauSync(object):
         formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
         # logfile handler
-        lf_handler = logging.FileHandler(self.config.LOGFILE)
+        lf_handler = logging.FileHandler(logfile)
         lf_handler.setFormatter(formatter)
         logger.addHandler(lf_handler)
 
@@ -430,7 +433,7 @@ class CauSync(object):
         """ Recursively creates a directory (mostly used for destination dir). """
         try:
             os.makedirs(path)
-        except Exception as e:
+        except OSError as e:
             if e.errno == 17 and e.strerror == "File exists":
                 pass
             else:
@@ -503,6 +506,11 @@ def parse_args():
                         default=None,
                         help="set a custom loglevel if 'info' or -v is not enough")
 
+    parser.add_argument('--logfile',
+                        action='store',
+                        default=None,
+                        help="set logfile path")
+
     parser.add_argument('-v',
                         '--verbose',
                         action='store_true',
@@ -542,5 +550,6 @@ if __name__ == "__main__":
                  args.loglevel,
                  args.verbose,
                  args.pidfile,
-                 args.cleanup)
+                 args.cleanup,
+                 args.logfile)
     cs.run()

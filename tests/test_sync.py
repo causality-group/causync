@@ -68,4 +68,3 @@ def test_sync():
             assert_equals(fp.read(), lorem[lorem_parts[i][0]: lorem_parts[i][1]])
 
     remove_temp()
-
