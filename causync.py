@@ -149,7 +149,7 @@ class CauSync(object):
             It is executed when the task argument is 'sync'.
         """
 
-        #self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
+        # self.curdate = datetime.now().strftime(self.config.DATE_FORMAT)
         extra_flags = ""
 
         if self.dry_run:
@@ -430,7 +430,7 @@ class CauSync(object):
         """ Recursively creates a directory (mostly used for destination dir). """
         try:
             os.makedirs(path)
-        except Exception as e:
+        except OSError as e:
             if e.errno == 17 and e.strerror == "File exists":
                 pass
             else:
